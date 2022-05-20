@@ -42,7 +42,10 @@ pub fn parse() -> Result<Vec<Operation>> {
 
     let mut list_operations = vec![];
     for result in rdr.deserialize::<Operation>() {
-        list_operations.push(result?);
+        match result {
+            Ok(v) => list_operations.push(v),
+            Err(_) => continue, // if one line cannot be parsed, ignore it
+        }
     }
     Ok(list_operations)
 }
