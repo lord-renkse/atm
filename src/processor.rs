@@ -3,7 +3,7 @@ use crate::parser::{Operation, TypeOperation};
 use crate::transaction::Transaction;
 use crate::{reader, writer};
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 mod executors;
@@ -26,6 +26,9 @@ pub struct Processor {
     // client_id: Account
     // it represents a SQL database table, in a real scenario it would be a database access boxed trait
     database: HashMap<u16, Account>,
+    // HashSet to keep track of the transaction history, this is not the ideal fix
+    // since it is taking x2 memory, but on the other hand the access time is O(1)
+    transactions: HashSet<u32>,
 }
 
 impl Processor {
@@ -37,13 +40,18 @@ impl Processor {
             receiver,
             sender,
             database: Default::default(),
+            transactions: Default::default()
         }
     }
 
     // Auxiliary function to process the corresponding Operation
     fn process_data(&mut self, operation: Operation) {
-        let client_id = operation.client;
         let tx = operation.tx;
+        // If the transaction already exist, we exit. This should be done properly with error handling
+        if self.transactions.contains(&tx) && operation.type_operation == TypeOperation::deposit {
+            return;
+        }
+        let client_id = operation.client;
         let account = self
             .database
             .entry(client_id)
@@ -51,6 +59,7 @@ impl Processor {
         match Self::execute_operation(account, operation) {
             OperationStatus::Successful(new_transaction) => {
                 account.transaction_history.insert(tx, new_transaction);
+                self.transactions.insert(tx);
             }
             OperationStatus::UpdateTransaction(tx, transaction) => {
                 *account
@@ -101,6 +110,7 @@ mod test {
     use crate::account::Account;
     use crate::parser::{Operation, TypeOperation};
     use crate::processor::Processor;
+    use crate::transaction::{Transaction, TransactionType};
     use crate::{reader, writer};
     use std::collections::HashMap;
     use tokio::sync::mpsc;
@@ -194,6 +204,12 @@ mod test {
             },
             Operation {
                 type_operation: TypeOperation::deposit,
+                client: 3,
+                tx: 1,
+                amount: Some(1.000100),
+            },
+            Operation {
+                type_operation: TypeOperation::deposit,
                 client: 5,
                 tx: 4,
                 amount: Some(5.000100),
@@ -226,7 +242,24 @@ mod test {
                     held_funds: 0,
                     available_funds: 0,
                     locked: false,
-                    transaction_history: Default::default(),
+                    transaction_history: HashMap::from([
+                        (
+                            2,
+                            Transaction {
+                                client_id: 1,
+                                amount: 0.0001,
+                                type_transaction: TransactionType::Deposit,
+                            },
+                        ),
+                        (
+                            202,
+                            Transaction {
+                                client_id: 1,
+                                amount: 0.0001,
+                                type_transaction: TransactionType::Withdrawal,
+                            },
+                        ),
+                    ]),
                 },
             ),
             (
@@ -236,7 +269,24 @@ mod test {
                     held_funds: 0,
                     available_funds: 30002,
                     locked: false,
-                    transaction_history: Default::default(),
+                    transaction_history: HashMap::from([
+                        (
+                            0,
+                            Transaction {
+                                client_id: 3,
+                                amount: 2.0001,
+                                type_transaction: TransactionType::Deposit,
+                            },
+                        ),
+                        (
+                            1,
+                            Transaction {
+                                client_id: 3,
+                                amount: 1.0001,
+                                type_transaction: TransactionType::Deposit,
+                            },
+                        ),
+                    ]),
                 },
             ),
             (
@@ -246,7 +296,24 @@ mod test {
                     held_funds: 0,
                     available_funds: 1,
                     locked: false,
-                    transaction_history: Default::default(),
+                    transaction_history: HashMap::from([
+                        (
+                            4,
+                            Transaction {
+                                client_id: 5,
+                                amount: 5.0001,
+                                type_transaction: TransactionType::Deposit,
+                            },
+                        ),
+                        (
+                            105,
+                            Transaction {
+                                client_id: 5,
+                                amount: 5.0000,
+                                type_transaction: TransactionType::Withdrawal,
+                            },
+                        ),
+                    ]),
                 },
             ),
         ]);
@@ -352,6 +419,66 @@ mod test {
                 tx: 301,
                 amount: Some(1000.0),
             },
+            Operation {
+                type_operation: TypeOperation::deposit,
+                client: 5,
+                tx: 500,
+                amount: Some(100_000_000_000.0),
+            },
+            Operation {
+                type_operation: TypeOperation::dispute,
+                client: 5,
+                tx: 500,
+                amount: None,
+            },
+            Operation {
+                type_operation: TypeOperation::deposit,
+                client: 5,
+                tx: 501,
+                amount: Some(100_000_000_000.0),
+            },
+            Operation {
+                type_operation: TypeOperation::chargeback,
+                client: 4,
+                tx: 500,
+                amount: None,
+            },
+            Operation {
+                type_operation: TypeOperation::resolve,
+                client: 5,
+                tx: 500,
+                amount: None,
+            },
+            Operation {
+                type_operation: TypeOperation::deposit,
+                client: 10,
+                tx: 600,
+                amount: Some(1000.0),
+            },
+            Operation {
+                type_operation: TypeOperation::dispute,
+                client: 10,
+                tx: 600,
+                amount: None,
+            },
+            Operation {
+                type_operation: TypeOperation::resolve,
+                client: 10,
+                tx: 600,
+                amount: None,
+            },
+            Operation {
+                type_operation: TypeOperation::dispute,
+                client: 10,
+                tx: 600,
+                amount: None,
+            },
+            Operation {
+                type_operation: TypeOperation::chargeback,
+                client: 10,
+                tx: 600,
+                amount: None,
+            },
         ];
 
         let expected_results: HashMap<u16, Account> = HashMap::from([
@@ -362,7 +489,40 @@ mod test {
                     held_funds: 0,
                     available_funds: 8220004,
                     locked: false,
-                    transaction_history: Default::default(),
+                    transaction_history: HashMap::from([
+                        (
+                            0,
+                            Transaction {
+                                client_id: 1,
+                                amount: 502.0001,
+                                type_transaction: TransactionType::Deposit,
+                            },
+                        ),
+                        (
+                            2,
+                            Transaction {
+                                client_id: 1,
+                                amount: 320.0001,
+                                type_transaction: TransactionType::Deposit,
+                            },
+                        ),
+                        (
+                            200,
+                            Transaction {
+                                client_id: 1,
+                                amount: 0.0001,
+                                type_transaction: TransactionType::Deposit,
+                            },
+                        ),
+                        (
+                            201,
+                            Transaction {
+                                client_id: 1,
+                                amount: 0.0001,
+                                type_transaction: TransactionType::Deposit,
+                            },
+                        ),
+                    ]),
                 },
             ),
             (
@@ -372,7 +532,70 @@ mod test {
                     held_funds: 0,
                     available_funds: 10000000,
                     locked: true,
-                    transaction_history: Default::default(),
+                    transaction_history: HashMap::from([
+                        (
+                            300,
+                            Transaction {
+                                client_id: 2,
+                                amount: 1000.0,
+                                type_transaction: TransactionType::ChargedBack,
+                            },
+                        ),
+                        (
+                            301,
+                            Transaction {
+                                client_id: 2,
+                                amount: 1000.0,
+                                type_transaction: TransactionType::Deposit,
+                            },
+                        ),
+                    ]),
+                },
+            ),
+            (
+                5,
+                Account {
+                    client_id: 5,
+                    held_funds: 1_000_000_000_000_000,
+                    available_funds: 1_000_000_000_000_000,
+                    locked: false,
+                    transaction_history: HashMap::from([
+                        (
+                            500,
+                            Transaction {
+                                client_id: 5,
+                                amount: 100_000_000_000.0,
+                                type_transaction: TransactionType::Dispute,
+                            },
+                        ),
+                        (
+                            501,
+                            Transaction {
+                                client_id: 5,
+                                amount: 100_000_000_000.0,
+                                type_transaction: TransactionType::Deposit,
+                            },
+                        ),
+                    ]),
+                },
+            ),
+            (
+                10,
+                Account {
+                    client_id: 10,
+                    held_funds: 0,
+                    available_funds: 0,
+                    locked: true,
+                    transaction_history: HashMap::from([
+                        (
+                            600,
+                            Transaction {
+                                client_id: 10,
+                                amount: 1000.0,
+                                type_transaction: TransactionType::ChargedBack,
+                            },
+                        ),
+                    ]),
                 },
             ),
         ]);

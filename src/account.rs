@@ -19,6 +19,7 @@ impl PartialEq for Account {
             && self.held_funds == other.held_funds
             && self.available_funds == other.available_funds
             && self.locked == other.locked
+            && self.transaction_history == other.transaction_history
     }
 }
 /// IMPORTANT NOTE: these function return bool instead of a custom error message/type
@@ -83,7 +84,16 @@ impl Account {
     }
 
     pub fn unblock_funds(&mut self, amount: f64) -> bool {
-        self.substract_held_funds(amount) && self.add_funds(amount)
+        if self.substract_held_funds(amount) {
+           if self.add_funds(amount) {
+               true
+           } else {
+               self.add_held_funds(amount);
+               false
+           }
+        } else {
+            false
+        }
     }
 
     pub fn retire_blocked_funds(&mut self, amount: f64) -> bool {
